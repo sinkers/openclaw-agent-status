@@ -1,0 +1,8 @@
+{
+  "name": "agent-status",
+  "version": "1.0.0",
+  "description": "OpenClaw plugin: exposes GET /v1/agents/status for live agent monitoring",
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  }
+}
