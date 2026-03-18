@@ -1,13 +1,19 @@
 {
-  "name": "agent-status",
-  "version": "0.1.0",
-  "description": "Exposes GET /v1/agents/status — live agent status for remote monitoring",
-  "author": "sinkers",
-  "endpoints": [
-    {
-      "method": "GET",
-      "path": "/v1/agents/status",
-      "handler": "handleAgentStatus"
+  "id": "agent-status",
+  "name": "Agent Status",
+  "description": "Exposes GET /v1/agents/status returning live agent status with last active time, status classification, and current task",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "activeThresholdSeconds": {
+        "type": "number",
+        "description": "Seconds since last activity to consider an agent 'active' (default: 300 = 5 minutes)"
+      },
+      "idleThresholdSeconds": {
+        "type": "number",
+        "description": "Seconds since last activity before an agent becomes 'stale' (default: 1800 = 30 minutes)"
+      }
     }
-  ]
+  }
 }
