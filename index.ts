@@ -18,7 +18,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "http";
-import { readFileSync, openSync, readSync, fstatSync, closeSync } from "fs";
+import { readFile, open } from "fs/promises";
 import { join } from "path";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -37,6 +37,14 @@ interface SessionEntry {
 
 interface SessionStore {
   [sessionKey: string]: SessionEntry;
+}
+
+interface TranscriptEntry {
+  type?: string;
+  message?: {
+    role?: string;
+    content?: Array<{ type?: string; text?: string }>;
+  };
 }
 
 interface AgentStatusEntry {
@@ -66,25 +74,27 @@ function getAgentDisplayName(agent: AgentConfig): string {
  * Read the last `maxBytes` of a file efficiently using a seek + read.
  * Returns the content as a string. Safe to call on missing/empty files.
  */
-function readFileTail(filePath: string, maxBytes = 16384): string {
-  let fd: number | null = null;
+async function readFileTail(filePath: string, maxBytes = 16384): Promise<string> {
+  let fh: Awaited<ReturnType<typeof open>> | null = null;
   try {
-    fd = openSync(filePath, "r");
-    const stat = fstatSync(fd);
+    fh = await open(filePath, "r");
+    const stat = await fh.stat();
     const fileSize = stat.size;
     if (fileSize === 0) return "";
 
     const readBytes = Math.min(maxBytes, fileSize);
     const offset = fileSize - readBytes;
     const buf = Buffer.allocUnsafe(readBytes);
-    readSync(fd, buf, 0, readBytes, offset);
+    await fh.read(buf, 0, readBytes, offset);
     return buf.toString("utf8");
-  } catch {
+  } catch (err) {
+    // File missing or unreadable — treat as empty
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.debug("[agent-status] readFileTail error:", (err as Error).message);
+    }
     return "";
   } finally {
-    if (fd !== null) {
-      try { closeSync(fd); } catch { /* ignore */ }
-    }
+    await fh?.close().catch(() => { /* ignore close errors */ });
   }
 }
 
@@ -92,8 +102,8 @@ function readFileTail(filePath: string, maxBytes = 16384): string {
  * Scan a JSONL transcript tail and return the last assistant text message
  * (truncated to 100 chars), or null if none found.
  */
-function getLastAssistantText(sessionFile: string): string | null {
-  const tail = readFileTail(sessionFile, 16384);
+async function getLastAssistantText(sessionFile: string): Promise<string | null> {
+  const tail = await readFileTail(sessionFile, 16384);
   if (!tail) return null;
 
   // Split into lines — first line may be partial; skip it
@@ -104,13 +114,7 @@ function getLastAssistantText(sessionFile: string): string | null {
     const line = safeLines[i].trim();
     if (!line) continue;
     try {
-      const entry = JSON.parse(line) as {
-        type?: string;
-        message?: {
-          role?: string;
-          content?: Array<{ type?: string; text?: string }>;
-        };
-      };
+      const entry = JSON.parse(line) as TranscriptEntry;
       if (entry.type !== "message") continue;
       if (entry.message?.role !== "assistant") continue;
 
@@ -135,17 +139,20 @@ function getLastAssistantText(sessionFile: string): string | null {
 /**
  * Read the agent's session store and return the most recently active session.
  */
-function getMostRecentSession(
+async function getMostRecentSession(
   stateDir: string,
   agentId: string
-): { updatedAt: number; sessionFile: string | undefined } | null {
+): Promise<{ updatedAt: number; sessionFile: string | undefined } | null> {
   const sessionsPath = join(stateDir, "agents", agentId, "sessions", "sessions.json");
 
   let store: SessionStore;
   try {
-    const raw = readFileSync(sessionsPath, "utf8");
+    const raw = await readFile(sessionsPath, "utf8");
     store = JSON.parse(raw) as SessionStore;
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.debug("[agent-status] sessions.json read error for", agentId, ":", (err as Error).message);
+    }
     return null;
   }
 
@@ -183,9 +190,9 @@ export default function register(api: any) {
     return "stale";
   }
 
-  function buildAgentStatus(agent: AgentConfig, stateDir: string): AgentStatusEntry {
+  async function buildAgentStatus(agent: AgentConfig, stateDir: string): Promise<AgentStatusEntry> {
     const now = Date.now();
-    const session = getMostRecentSession(stateDir, agent.id);
+    const session = await getMostRecentSession(stateDir, agent.id);
 
     if (!session) {
       return {
@@ -201,7 +208,7 @@ export default function register(api: any) {
     const agoSeconds = Math.floor((now - session.updatedAt) / 1000);
     const status = computeStatus(session.updatedAt, now);
     const current_task = session.sessionFile
-      ? getLastAssistantText(session.sessionFile)
+      ? await getLastAssistantText(session.sessionFile)
       : null;
 
     return {
@@ -265,7 +272,7 @@ export default function register(api: any) {
           return true;
         }
 
-        const data = buildAgentStatus(agent, stateDir);
+        const data = await buildAgentStatus(agent, stateDir);
         res.statusCode = 200;
         res.setHeader("Content-Type", "application/json");
         res.end(JSON.stringify(data));
@@ -273,7 +280,9 @@ export default function register(api: any) {
       }
 
       // ── All agents endpoint ──
-      const data = agentList.map((agent) => buildAgentStatus(agent, stateDir));
+      const data = await Promise.all(
+        agentList.map((agent) => buildAgentStatus(agent, stateDir))
+      );
       res.statusCode = 200;
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ object: "list", data }));
