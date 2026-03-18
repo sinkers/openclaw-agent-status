@@ -1,0 +1,13 @@
+{
+  "name": "agent-status",
+  "version": "0.1.0",
+  "description": "Exposes GET /v1/agents/status — live agent status for remote monitoring",
+  "author": "sinkers",
+  "endpoints": [
+    {
+      "method": "GET",
+      "path": "/v1/agents/status",
+      "handler": "handleAgentStatus"
+    }
+  ]
+}
